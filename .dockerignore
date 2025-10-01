@@ -1,0 +1,19 @@
+# .dockerignore
+
+# Виртуальное окружение
+venv
+.venv
+env
+
+# Директории с данными (будут монтироваться с хоста)
+dialogs/
+product_images.json
+
+# Конфиденциальные данные
+.env
+
+# IDE и кэш
+.idea/
+__pycache__/
+*.pyc
+*.log
