@@ -557,7 +557,7 @@ def generate_daily_report():
         f"6. Закрытие день в день (шт/сумма): <b>{day_in_day_count} шт. / {day_in_day_sum:,.0f} руб.</b>"
     )
 
-    # send_to_telegram(report_summary, config.TELEGRAM_TOPIC_ID) # Раскомментировать, когда будет настроен cron
+    send_to_telegram(report_summary, config.TELEGRAM_TOPIC_ID) # Раскомментировать, когда будет настроен cron
     print("\n--- Сгенерированный Отчет ---\n" + report_summary)
 
     logger.info("=== Генерация отчета завершена. ===")
