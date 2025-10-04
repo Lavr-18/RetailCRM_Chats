@@ -27,17 +27,15 @@ services:
       - ./dialogs:/app/dialogs
 
     # ! ИЗМЕНЕННАЯ КОМАНДА:
-    command: >
-      /bin/bash -c "
-        # 1. Загружаем переменные окружения из .env
-        export $(grep -v '^#' .env | xargs)
-        
-        # 2. Настраиваем cron (используем /usr/bin/env, чтобы обеспечить передачу ENV)
-        echo '30 23 * * * cd /app && /usr/bin/env /usr/local/bin/python /app/report_generator.py >> /var/log/cron.log 2>&1' | crontab -
-        
-        # 3. Выводим расписание cron для проверки
-        crontab -l
-        
-        # 4. Запускаем cron-демон
-        cron -f
-      "
+    command: /bin/bash -c |
+      # 1. Загружаем переменные окружения из .env
+      export $(grep -v '^#' .env | xargs)
+      
+      # 2. Настраиваем cron (используем /usr/bin/env, чтобы обеспечить передачу ENV)
+      echo '30 23 * * * cd /app && /usr/bin/env /usr/local/bin/python /app/report_generator.py >> /var/log/cron.log 2>&1' | crontab -
+      
+      # 3. Выводим расписание cron для проверки
+      crontab -l
+      
+      # 4. Запускаем cron-демон
+      cron -f
