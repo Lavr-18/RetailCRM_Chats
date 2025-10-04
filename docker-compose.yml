@@ -20,24 +20,24 @@ services:
   cron-reports:
     build: .
     container_name: retailcrm_cron
-    # Должен перезапускаться, если падает, чтобы cron-демон работал постоянно
     restart: always
-    # Используем среду (env) для передачи переменных из файла .env на хосте
     env_file:
       - .env
     volumes:
-      # Монтируем ту же директорию для доступа к файлам диалогов
       - ./dialogs:/app/dialogs
-    # Запускаем команду в bash для настройки и запуска cron
+
+    # ! ИЗМЕНЕННАЯ КОМАНДА:
     command: >
       /bin/bash -c "
-        # Настраиваем cron на запуск скрипта в 23:30 (30 23 * * *)
-        # ИСПОЛЬЗУЕМ ПОЛНЫЙ ПУТЬ К PYTHON ДЛЯ НАДЕЖНОСТИ
-        echo '30 23 * * * /usr/local/bin/python /app/report_generator.py >> /var/log/cron.log 2>&1' | crontab -
+        # 1. Загружаем переменные окружения из .env
+        export $(grep -v '^#' .env | xargs)
         
-        # Выводим расписание cron для проверки (в логах контейнера)
+        # 2. Настраиваем cron (используем /usr/bin/env, чтобы обеспечить передачу ENV)
+        echo '30 23 * * * cd /app && /usr/bin/env /usr/local/bin/python /app/report_generator.py >> /var/log/cron.log 2>&1' | crontab -
+        
+        # 3. Выводим расписание cron для проверки
         crontab -l
         
-        # Запускаем cron-демон и держим контейнер активным (cron -f)
+        # 4. Запускаем cron-демон
         cron -f
       "
