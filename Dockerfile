@@ -16,8 +16,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем весь остальной код
 COPY . .
 
-# Разрешаем запуск Python скриптов для cron (не обязательно, но полезно)
+# Разрешаем запуск Python скриптов
 RUN chmod +x main.py report_generator.py
+
+# =======================================================
+# ФИНАЛЬНАЯ НАСТРОЙКА CRON:
+# Записываем расписание (в 23:30) в crontab
+# Используем /usr/bin/env, чтобы обеспечить передачу переменных окружения (ENV)
+# =======================================================
+RUN echo '30 23 * * * cd /app && /usr/bin/env /usr/local/bin/python /app/report_generator.py >> /var/log/cron.log 2>&1' | crontab -
 
 # Команда по умолчанию для контейнера listener (она будет переопределена в docker-compose)
 CMD ["python", "main.py"]
