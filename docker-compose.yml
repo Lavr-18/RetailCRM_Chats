@@ -27,8 +27,4 @@ services:
       - ./dialogs:/app/dialogs
 
     # ! ИЗМЕНЕННАЯ КОМАНДА:
-    command: /bin/bash -c |
-      export $(grep -v '^#' .env | xargs) && \
-      echo '30 23 * * * cd /app && /usr/bin/env /usr/local/bin/python /app/report_generator.py >> /var/log/cron.log 2>&1' | crontab - && \
-      crontab -l && \
-      cron -f
+    command: /bin/bash -c "export \$(grep -v '^#' .env | xargs); echo '30 23 * * * cd /app && /usr/bin/env /usr/local/bin/python /app/report_generator.py >> /var/log/cron.log 2>&1' | crontab -; crontab -l; cron -f"
