@@ -2,18 +2,15 @@
 version: '3.8'
 
 services:
-  # 1. СЕРВИС СЛУШАТЕЛЯ
+  # 1. СЕРВИС СЛУШАТЕЛЯ (Без изменений)
   listener:
     build: .
     container_name: retailcrm_listener
     restart: always
-    # Используем среду (env) для передачи переменных из файла .env на хосте
     env_file:
       - .env
     volumes:
-      # Монтируем директорию для хранения логов чатов
       - ./dialogs:/app/dialogs
-    # Запускаем вашу точку входа
     command: python main.py
 
   # 2. СЕРВИС ЕЖЕДНЕВНЫХ ОТЧЕТОВ (Cron-задача)
@@ -26,5 +23,6 @@ services:
     volumes:
       - ./dialogs:/app/dialogs
 
-    # ! ФИНАЛЬНЫЙ РАБОЧИЙ ВАРИАНТ: Запуск только Cron-демона.
-    command: cron -f
+    # ! ФИНАЛЬНЫЙ РАБОЧИЙ ВАРИАНТ 2.0:
+    #   Принудительный экспорт переменных из .env в окружение перед запуском Cron.
+    command: sh -c "export $$(grep -v '^#' .env | xargs) && cron -f"
