@@ -1,4 +1,3 @@
-# docker-compose.yml
 version: '3.8'
 
 services:
@@ -23,6 +22,6 @@ services:
     volumes:
       - ./dialogs:/app/dialogs
 
-    # ! ФИНАЛЬНЫЙ РАБОЧИЙ ВАРИАНТ 2.0:
-    #   Принудительный экспорт переменных из .env в окружение перед запуском Cron.
-    command: sh -c "export $$(grep -v '^#' .env | xargs) && cron -f"
+    # ! ФИНАЛЬНЫЙ РАБОЧИЙ ВАРИАНТ 3.0:
+    # Возвращаем простую команду, т.к. экспорт ENV теперь внутри скрипта run_report.sh.
+    command: cron -f
