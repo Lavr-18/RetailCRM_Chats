@@ -6,14 +6,16 @@ import os
 import time
 import requests
 import websocket
+import pytz  # <-- ДОБАВЛЕНО: Для работы с часовыми поясами
 from threading import Thread
-from datetime import datetime
+from datetime import datetime, time as dt_time  # time переименован в dt_time
 import re
 import urllib.parse
 
 # Импортируем новые модули
 from dialog_analyser import analyze_dialog
 from data_exporter import move_dialog_to_closed, process_and_export_data
+from report_generator import generate_daily_report  # <-- ДОБАВЛЕНО: для запуска отчета
 
 # Настройка логирования для этого модуля (можно использовать тот же, что и в main.py)
 logger = logging.getLogger(__name__)
@@ -43,6 +45,10 @@ MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_DELAY = 5
 MAX_RECONNECT_DELAY = 60
 
+# Настройки для планировщика отчетов
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+LAST_REPORT_DATE = None  # Хранит дату последнего запуска отчета (чтобы не запускать его чаще раза в день)
+
 
 # --------------------------------------- #
 #           Вспомогательные функции
@@ -62,9 +68,11 @@ def send_telegram_notification(text: str, topic_id: str):
 
     # Экранируем специальные символы для MarkdownV2
     special_chars = r'_*[]()~`>#+-=|{}.!'
+    # Важно: экранировать нужно исходный текст, не модифицированный.
+    clean_text = text
     for char in special_chars:
-        text = text.replace(char, f'\\{char}')
-    payload['text'] = text
+        clean_text = clean_text.replace(char, f'\\{char}')
+    payload['text'] = clean_text
 
     try:
         response = requests.post(url, data=payload)
@@ -139,7 +147,7 @@ def save_message_to_file(dialog_id: int, client_phone: str, sender_type: str, me
 # --------------------------------------- #
 #   Callbacks WebSocket для RetailCRM
 # --------------------------------------- #
-
+# (on_message, on_error, on_close, on_open - без изменений)
 def on_message(ws, message):
     """
     Вызывается при входящем сообщении по WebSocket.
@@ -278,12 +286,63 @@ def run_with_reconnect(ws):
 
 
 # --------------------------------------- #
+#          Планировщик Отчетов
+# --------------------------------------- #
+
+def report_scheduler():
+    """
+    Неблокирующий планировщик, который запускает генератор отчета
+    ежедневно в 23:00 по МСК в отдельном потоке.
+    """
+    global LAST_REPORT_DATE
+    logger.info("Поток планировщика отчетов запущен.")
+
+    while True:
+        try:
+            # Получаем текущее время в Московском часовом поясе
+            now_msk = datetime.now(MOSCOW_TZ)
+            current_date = now_msk.date()
+
+            # Целевое время 23:00:00 (end of day)
+            target_time = dt_time(23, 0, 0)
+
+            # Сравниваем только время, чтобы определить, наступило ли 23:00
+            is_it_time = now_msk.time() >= target_time
+
+            # Проверяем условия:
+            # 1. Время >= 23:00:00 МСК
+            # 2. Отчет еще не был запущен СЕГОДНЯ (для текущей даты)
+            if is_it_time and current_date != LAST_REPORT_DATE:
+                logger.info(f"Наступило 23:00 MSK. Запуск генерации ежедневного отчета...")
+
+                # Запуск генератора отчета в отдельном потоке, чтобы не блокировать основной цикл
+                # (listener) и этот планировщик.
+                report_thread = Thread(target=generate_daily_report, daemon=True)
+                report_thread.start()
+
+                # Обновляем дату последнего запуска
+                LAST_REPORT_DATE = current_date
+
+                # После запуска отчета переходим в "спящий режим" на 1 час (3600 секунд),
+                # чтобы избежать многократной проверки и запуска в течение часа после 23:00.
+                time.sleep(3600)
+
+                # Основной цикл проверки: спим 1 минуту
+            time.sleep(60)
+
+        except Exception as e:
+            logger.error(f"Критическая ошибка в планировщике отчетов: {e}", exc_info=True)
+            # При ошибке ждем 5 минут перед следующей попыткой цикла
+            time.sleep(300)
+
+
+# --------------------------------------- #
 #         Инициализация и запуск
 # --------------------------------------- #
 
 def start_listener():
     """
-    Точка входа для запуска слушателя событий.
+    Точка входа для запуска слушателя событий и планировщика отчетов.
     """
     try:
         test_request = requests.get(f"{API_URL}/bots", headers=HEADERS)
@@ -294,11 +353,17 @@ def start_listener():
         logger.error(f"Не удалось подключиться к API RetailCRM: {e}")
         return
 
+    # 1. Запуск слушателя WebSocket
     ws = create_websocket()
     ws_thread = Thread(target=run_with_reconnect, args=(ws,), daemon=True)
     ws_thread.start()
 
+    # 2. Запуск планировщика отчетов
+    report_scheduler_thread = Thread(target=report_scheduler, daemon=True)
+    report_scheduler_thread.start()
+
     try:
+        # Основной поток просто ожидает
         while True:
             time.sleep(1)
     except KeyboardInterrupt:

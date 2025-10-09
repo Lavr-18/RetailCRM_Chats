@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # 1. СЕРВИС СЛУШАТЕЛЯ (Без изменений)
+  # ЕДИНСТВЕННЫЙ СЕРВИС: СЛУШАТЕЛЬ, ОБРАБОТЧИК И ГЕНЕРАТОР ОТЧЕТОВ
   listener:
     build: .
     container_name: retailcrm_listener
@@ -9,19 +9,8 @@ services:
     env_file:
       - .env
     volumes:
+      # Важно: монтируем папку для сохранения диалогов и отчетов
       - ./dialogs:/app/dialogs
+    # Команда запускает main.py, который, в свою очередь, запускает
+    # генератор отчетов в отдельном потоке по расписанию.
     command: python main.py
-
-  # 2. СЕРВИС ЕЖЕДНЕВНЫХ ОТЧЕТОВ (Cron-задача)
-  cron-reports:
-    build: .
-    container_name: retailcrm_cron
-    restart: always
-    env_file:
-      - .env
-    volumes:
-      - ./dialogs:/app/dialogs
-
-    # ! ФИНАЛЬНЫЙ РАБОЧИЙ ВАРИАНТ 3.0:
-    # Возвращаем простую команду, т.к. экспорт ENV теперь внутри скрипта run_report.sh.
-    command: cron -f

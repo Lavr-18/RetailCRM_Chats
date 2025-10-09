@@ -1,3 +1,4 @@
+pytz
 dotenv~=0.9.9
 python-dotenv~=1.1.1
 requests~=2.32.5
