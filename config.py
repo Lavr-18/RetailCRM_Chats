@@ -18,13 +18,56 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_TOPIC_ID = os.getenv("TELEGRAM_TOPIC_ID")
 TELEGRAM_WARNINGS_TOPIC_ID = os.getenv("TELEGRAM_WARNINGS_TOPIC_ID")
+
+# Google Forms URL для полного анализа (с критериями OpenAI)
 GOOGLE_FORMS_URL = os.getenv("GOOGLE_FORMS_URL")
 
+# Google Forms URL для бесплатного экспорта (без критериев OpenAI)
+# ВАЖНО: Убедитесь, что эта переменная добавлена в ваш .env файл
+GOOGLE_FORMS_URL_FREE = os.getenv("GOOGLE_FORMS_URL_FREE")
+
+
+# --- Настройки фильтрации RetailCRM ---
+
+# Запрещенный метод оформления заказа, при котором анализ не проводится
+INVALID_ORDER_METHOD = "vkhodiashchii-zvonok"
+
+# Все допустимые символьные коды статусов заказов для групп: Новый, Согласование, Выполнен, Отменен
+RETAILCRM_VALID_STATUSES = {
+    # Группа: Новый
+    "new", "gotovo-k-soglasovaniiu", "soglasovat-sostav", "agree-absence", "novyi-predoplachen", "novyi-oplachen",
+    # Группа: Согласование
+    "availability-confirmed", "client-confirmed", "offer-analog", "ne-dozvonilis", "perezvonit-pozdnee",
+    "otpravili-varianty-na-pochtu", "otpravili-varianty-v-vatsap", "ready-to-wait", "waiting-for-arrival",
+    "klient-zhdet-foto-s-zakupki", "vizit-v-shourum", "ozhidaet-oplaty", "gotovim-kp", "kp-gotovo-k-zashchite",
+    "soglasovanie-kp", "proekt-visiak", "soglasovano", "oplacheno", "prepayed", "soglasovan-ozhidaet-predoplaty",
+    "vyezd-biologa-oplachen", "vyezd-biologa-zaplanirovano", "predoplata-poluchena", "oplata-ne-proshla",
+    "proverka-nalichiia", "obsluzhivanie-zaplanirovano", "obsluzhivanie-soglasovanie", "predoplachen-soglasovanie",
+    "servisnoe-obsluzhivanie-oplacheno", "zakaz-obrabotan-soglasovanie", "vyezd-biologa-soglasovanie",
+    # Группа: Выполнен
+    "complete", "partially-completed", "frendli-zvonok-naznachen", "frendli-zvonok-sovershen",
+    # Группа: Отменен
+    "no-call", "no-product", "already-buyed", "delyvery-did-not-suit", "prices-did-not-suit", "return",
+    "ne-khochet-vnosit-predoplatu", "klient-ne-vykhodit-na-sviaz", "nuzhno-srochno-no-storonnei-dostavkoi-ne-khotiat",
+    "nuzhno-srochno-rasteniia-net-v-nalichii", "dostavka-v-drugoi-region-zhivoe-rastenie-melkii-zakaz",
+    "ne-aktualno-uzhe-kupili-v-drugom-meste", "ne-aktualno-peredumali-darit-peredumali-pokupat-oformit-pozzhe",
+    "net-v-nalichii-v-gollandii", "kashpo-net-v-nalichii-ne-khotiat-zhdat", "ne-khotiat-oplachivat-dostavku-dorogo",
+    "khoteli-poluchit-bolshuiu-skidku-predlozhennaia-ne-ustroila", "dorogo",
+    "khoteli-zakazat-prikhotlivoe-rastenie-no-peredumali-uznav-ob-ukhode",
+    "khoteli-poluchit-neskolko-pozitsii-na-vybor-v-moment-dostavki-otkazatsia-ot-tekh-chto-ne-podoidut",
+    "khoteli-predvaritelno-uvidet-foto-ot-sadovnika-rastenie-ne-iz-nalichiia",
+    "oformili-zakaz-na-iskusstvennoe-rastenie-dumaia-chto-ono-zhivoe",
+    "v-nalichii-net-nuzhnogo-iskusstvennogo-rasteniia", "slishkom-dolgo-otvechali", "tender", "cancel-other",
+    "khoteli-predvaritelno-uvidet-iskusstvennye-rasteniia", "nevernaia-tsena-na-saite", "tropik-doktor", "sozdan-zakaz",
+}
+
 # Список разрешенных доменов для платежных ссылок
-# Добавьте сюда домены всех платежных систем, которые используют менеджеры.
 ALLOWED_PAYMENT_DOMAINS = [
     'pay.alfabank.ru',
-    'tropichouse.ru'
+    'tropichouse.ru',
+    'yandex.ru',
+    'forms.gle',
+    'dostavka.yandex.ru',
 ]
 
 # Статичные категории для анализа (можно оставить в коде)

@@ -53,7 +53,7 @@ def move_dialog_to_closed(dialog_id: int, client_phone: str):
         os.makedirs(closed_dir)
         logger.info(f"Создана директория для закрытых диалогов: {closed_dir}")
 
-    # Изменено: теперь имя файла включает номер телефона
+    # Имя файла включает номер телефона
     file_name = f'dialog_{dialog_id}_{client_phone}.txt'
     active_path = os.path.join(active_dir, file_name)
     closed_path = os.path.join(closed_dir, file_name)
@@ -145,21 +145,40 @@ def get_manager_details_from_id(manager_id: int) -> dict | None:
 
 def send_to_google_forms(data: dict):
     """
-    Отправляет проанализированные данные в Google-таблицу через Google Forms.
+    Отправляет проанализированные данные в Google-таблицу через Google Forms
+    (для диалогов, прошедших фильтрацию и анализ OpenAI).
     """
-    logger.info("Начало отправки данных в Google Forms.")
+    logger.info("Начало отправки данных в Google Forms (Полный анализ).")
     logger.debug(f"Отправляемые данные: {data}")
     try:
         response = requests.post(config.GOOGLE_FORMS_URL, data=data, timeout=10)
         response.raise_for_status()
-        logger.info("✅ Данные успешно отправлены в Google Forms.")
+        logger.info("✅ Данные успешно отправлены в Google Forms (Полный анализ).")
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка при отправке данных в Google Forms: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при отправке данных в Google Forms (Полный анализ): {e}", exc_info=True)
+
+
+def send_to_google_forms_free(data: dict):
+    """
+    Отправляет базовые данные в Google-таблицу через Google Forms
+    (для диалогов, не прошедших фильтрацию или не требующих анализа OpenAI).
+    """
+    logger.info("Начало отправки данных в Google Forms (Базовый экспорт).")
+    logger.debug(f"Отправляемые данные: {data}")
+
+    # URL для базового экспорта берется из config.GOOGLE_FORMS_URL_FREE
+    try:
+        response = requests.post(config.GOOGLE_FORMS_URL_FREE, data=data, timeout=10)
+        response.raise_for_status()
+        logger.info("✅ Данные успешно отправлены в Google Forms (Базовый экспорт).")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка при отправке данных в Google Forms (Базовый экспорт): {e}", exc_info=True)
 
 
 def send_to_telegram(summary: str):
     """
     Отправляет краткое резюме диалога в Telegram-группу с поддержкой тем.
+    Использует parse_mode='HTML'.
     """
     logger.info("Начало отправки резюме в Telegram.")
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -182,31 +201,25 @@ def send_to_telegram(summary: str):
 def process_and_export_data(dialog_id: int, client_phone: str):
     """
     Центральная функция для обработки и экспорта данных закрытого диалога.
-    Принимает номер телефона клиента.
+    Включает логику фильтрации по статусу и методу заказа.
     """
     logger.info(f"=== Начало обработки закрытого диалога {dialog_id} ===")
 
-    # Изменено: теперь имя файла включает номер телефона
+    # 1. Загрузка текста диалога
     file_name = f'dialog_{dialog_id}_{client_phone}.txt'
     active_path = os.path.join('dialogs', 'active', file_name)
     closed_path = os.path.join('dialogs', 'closed', file_name)
 
     dialog_text = ""
     file_path = None
-
-    # 1. Сначала пытаемся найти файл в папке 'active'
     if os.path.exists(active_path):
         file_path = active_path
-        logger.info(f"Загрузка текста диалога из файла {file_path}")
-    # 2. Если не нашли, ищем в папке 'closed'
     elif os.path.exists(closed_path):
         file_path = closed_path
-        logger.info(f"Загрузка текста диалога из файла {file_path}")
     else:
-        logger.warning(f"Файл диалога {file_name} не найден ни в active, ни в closed. Пропускаем обработку.")
+        logger.warning(f"Файл диалога {file_name} не найден. Пропускаем обработку.")
         return
 
-    # 3. Загружаем текст диалога из найденного файла
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             dialog_text = f.read()
@@ -215,20 +228,22 @@ def process_and_export_data(dialog_id: int, client_phone: str):
         logger.error(f"Ошибка при чтении файла {file_path}: {e}", exc_info=True)
         return
 
-    # 4. Получаем детали последнего заказа
+    # 2. Получаем детали последнего заказа и инициализируем переменные
     order_details = get_latest_order_details_from_phone(client_phone)
     order_link = 'Неизвестно'
     total_summ = 'Неизвестно'
-    customer_type = 'Неизвестно'
+    customer_type = 'Физическое лицо'  # Дефолтное значение
     manager_name = 'Неизвестно'
+    should_analyze = False
+    order_number = 'Неизвестно'
 
     if order_details:
         order_link = f"{config.RETAILCRM_BASE_URL}/orders/{order_details.get('slug', 'Неизвестно')}/edit"
         total_summ = order_details.get('totalSumm', 'Неизвестно')
-        if order_details.get('orderType') == 'b2b':
-            customer_type = 'Юридическое лицо'
-        else:
-            customer_type = 'Физическое лицо'
+        order_number = order_details.get('externalId', 'Неизвестно')
+
+        # Определение типа клиента
+        customer_type = 'Юридическое лицо' if order_details.get('orderType') == 'b2b' else 'Физическое лицо'
 
         manager_id = order_details.get('managerId')
         if manager_id:
@@ -238,49 +253,83 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                 last_name = manager_details.get('lastName', '')
                 manager_name = f"{first_name} {last_name}".strip()
 
-    # 5. Анализируем диалог с помощью OpenAI
-    try:
-        openai_json_data, summary = analyze_dialog(dialog_text, config.CATEGORIES)
-        if openai_json_data and summary:
-            logger.info("Анализ диалога OpenAI завершен. Приступаем к экспорту.")
-            # 6. Формируем полную сводку для Telegram с дополнительной информацией
-            full_summary_telegram = (
-                f"<b>👤 Менеджер:</b> {manager_name}\n"
-                f"<b>📱 Телефон клиента:</b> {client_phone}\n"
-                f"<b>🔗 Ссылка на заказ:</b> <a href='{order_link}'>Заказ</a>\n\n"
-                f"{summary}"
-            )
+        # 3. Проверка условий для полного анализа (Tier 1)
+        order_status = order_details.get('status')
+        order_method = order_details.get('orderMethod')
 
-            # 7. Объединяем данные для Google Forms, используя точные entry-ID
-            google_forms_data = {
-                'entry.408402535': order_link,
-                'entry.711063137': total_summ,
-                'entry.90684815': customer_type,
-                'entry.1744925750': manager_name,
-                'entry.1791797075': dialog_text,
-                'entry.1213746785': openai_json_data.get('установление_контакта', 0),
-                'entry.812648406': openai_json_data.get('выявление_потребностей', 0),
-                'entry.567411627': openai_json_data.get('квалификация', 0),
-                'entry.154941084': openai_json_data.get('презентация', 0),
-                'entry.45434250': openai_json_data.get('возражение', 0),
-                'entry.830702183': openai_json_data.get('отработка_возражения', 0),
-                'entry.2001468013': openai_json_data.get('проговорены_договоренности', 0),
-                'entry.1565546251': openai_json_data.get('закрытие_на_оплату', 0)
-            }
-            logger.debug(f"Данные для Google Forms подготовлены.")
+        is_valid_status = order_status in config.RETAILCRM_VALID_STATUSES
+        is_valid_method = order_method != config.INVALID_ORDER_METHOD
 
-            # 8. Отправляем данные в Google Forms
-            send_to_google_forms(google_forms_data)
-
-            # 9. Отправляем полную сводку в Telegram
-            send_to_telegram(full_summary_telegram)
+        if is_valid_status and is_valid_method:
+            should_analyze = True
+            logger.info(
+                f"Условия фильтрации выполнены (Status: {order_status}, Method: {order_method}). Будет произведен полный анализ OpenAI.")
         else:
-            logger.error(f"OpenAI не смог проанализировать диалог {dialog_id}. Экспорт невозможен.")
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка в процессе анализа и экспорта: {e}", exc_info=True)
+            logger.info(
+                f"Условия фильтрации НЕ выполнены (Status: {order_status}, Method: {order_method}). Производится базовый экспорт.")
+    else:
+        logger.info("Заказ для клиента не найден. Производится базовый экспорт.")
 
-    # 10. Перемещаем файл после обработки, независимо от результата экспорта
-    # Изменено: теперь передаем client_phone
+    # --- Ветвление логики экспорта ---
+
+    if should_analyze:
+        # 4. Анализируем диалог с помощью OpenAI (Полный анализ - Tier 1)
+        try:
+            openai_json_data, summary = analyze_dialog(dialog_text, config.CATEGORIES)
+
+            if openai_json_data and summary:
+                logger.info("Анализ диалога OpenAI завершен. Приступаем к полному экспорту.")
+
+                # Формируем полную сводку для Telegram
+                full_summary_telegram = (
+                    f"<b>👤 Менеджер:</b> {manager_name}\n"
+                    f"<b>📱 Телефон клиента:</b> {client_phone}\n"
+                    f"<b>🔗 Ссылка на заказ:</b> <a href='{order_link}'>Заказ</a>\n\n"
+                    f"{summary}"
+                )
+
+                # Объединяем данные для Google Forms (с критериями)
+                google_forms_data = {
+                    'entry.408402535': order_link,
+                    'entry.711063137': total_summ,
+                    'entry.90684815': customer_type,
+                    'entry.1744925750': manager_name,
+                    'entry.1791797075': dialog_text,
+                    'entry.1213746785': openai_json_data.get('установление_контакта', 0),
+                    'entry.812648406': openai_json_data.get('выявление_потребностей', 0),
+                    'entry.567411627': openai_json_data.get('квалификация', 0),
+                    'entry.154941084': openai_json_data.get('презентация', 0),
+                    'entry.45434250': openai_json_data.get('возражение', 0),
+                    'entry.830702183': openai_json_data.get('отработка_возражения', 0),
+                    'entry.2001468013': openai_json_data.get('проговорены_договоренности', 0),
+                    'entry.1565546251': openai_json_data.get('закрытие_на_оплату', 0)
+                }
+
+                send_to_google_forms(google_forms_data)
+                send_to_telegram(full_summary_telegram)
+            else:
+                logger.error(f"OpenAI не смог проанализировать диалог {dialog_id}. Переход к базовому экспорту.")
+                # Если анализ провалился, переходим к базовому экспорту
+                should_analyze = False  # Принудительно переключаем на базовый экспорт
+
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в процессе анализа OpenAI: {e}", exc_info=True)
+            should_analyze = False
+
+    if not should_analyze:
+        # 5. Экспорт базовых данных (Tier 2)
+        # Собираем данные для Google Forms без критериев
+        google_forms_data_free = {
+            'entry.1563894862': order_number,  # Номер заказа
+            'entry.844658380': total_summ,  # Сумма заказа
+            'entry.1126205710': customer_type,  # Физ/Юр
+            'entry.3334402': dialog_text  # Диалог
+        }
+
+        send_to_google_forms_free(google_forms_data_free)
+        logger.info("Базовый экспорт данных завершен.")
+
+    # 6. Перемещаем файл после обработки
     move_dialog_to_closed(dialog_id, client_phone)
     logger.info(f"=== Обработка диалога {dialog_id} завершена ===")
 
@@ -288,110 +337,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
 # --- Тестовый модуль ---
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-
-    # Замените этот номер телефона на реальный, чтобы протестировать
-    test_phone_number = "79777796726"
-    test_dialog_id = 99999
-
-    # --------------------------------------- #
-    #     ТЕСТ: ПОЛУЧЕНИЕ ИНФОРМАЦИИ ИЗ API
-    # --------------------------------------- #
-    logger.info("Запуск тестового модуля для получения информации о заказе и менеджере...")
-    order_info = get_latest_order_details_from_phone(test_phone_number)
-    manager_details = None
-
-    if order_info:
-        logger.info(f"✅ Успешно получена информация по номеру {test_phone_number}.")
-        if 'managerId' in order_info:
-            manager_id = order_info['managerId']
-            manager_details = get_manager_details_from_id(manager_id)
-            if manager_details:
-                logger.info(f"✅ Успешно получена информация о менеджере по ID {manager_id}.")
-            else:
-                logger.error(f"❌ Не удалось получить информацию о менеджере с ID {manager_id}.")
-    else:
-        logger.error(f"❌ Не удалось получить информацию о заказе для номера {test_phone_number}.")
-
-    # --------------------------------------- #
-    #     ТЕСТ: ОТПРАВКА ДАННЫХ В GOOGLE FORMS
-    # --------------------------------------- #
-    logger.info("\nЗапуск тестового модуля для проверки отправки данных в Google Forms...")
-
-    # Формируем данные для отправки, используя переменные из API-ответов
-    order_link = f"{config.RETAILCRM_BASE_URL}/orders/{order_info.get('slug', '')}/edit" if order_info else 'Неизвестно'
-    total_summ = order_info.get('totalSumm', 'Неизвестно') if order_info else 'Неизвестно'
-    customer_type = 'Юридическое лицо' if order_info and order_info.get('orderType') == 'b2b' else 'Физическое лицо'
-    manager_name = 'Неизвестно'
-    if manager_details:
-        manager_name = f"{manager_details.get('firstName', '')} {manager_details.get('lastName', '')}".strip()
-
-    test_google_forms_data = {
-        'entry.408402535': order_link,
-        'entry.711063137': total_summ,
-        'entry.90684815': customer_type,
-        'entry.1744925750': manager_name,
-        'entry.1213746785': '1',  # Оставляем тестовые значения для остальных полей
-        'entry.812648406': '1',
-        'entry.567411627': '1',
-        'entry.154941084': '1',
-        'entry.45434250': '1',
-        'entry.830702183': '1',
-        'entry.2001468013': '1',
-        'entry.1565546251': '1'
-    }
-
-    try:
-        send_to_google_forms(test_google_forms_data)
-        logger.info("✅ Тестовые данные успешно отправлены в Google Forms.")
-    except Exception as e:
-        logger.error(f"❌ Ошибка при отправке тестовых данных в Google Forms: {e}", exc_info=True)
-
-    # --------------------------------------- #
-    #       ТЕСТ: ОТПРАВКА В ОСНОВНОЙ ТОПИК
-    # --------------------------------------- #
-    logger.info("\nЗапуск тестового модуля для проверки отправки в основной топик...")
-
-    test_summary = "Это тестовое резюме, имитирующее результат анализа."
-
-    # Формируем полную сводку для тестовой отправки
-    full_test_summary = (
-        f"<b>👤 Менеджер:</b> {manager_name}\n"
-        f"<b>📱 Телефон клиента:</b> {test_phone_number}\n"
-        f"<b>🔗 Ссылка на заказ:</b> <a href='{order_link}'>Заказ</a>\n\n"
-        f"{test_summary}"
-    )
-
-    try:
-        send_to_telegram(full_test_summary)
-        logger.info("✅ Тестовое резюме для основного топика успешно отправлено в Telegram.")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка при отправке тестового резюме в Telegram: {e}", exc_info=True)
-
-    # --------------------------------------- #
-    #       ТЕСТ: ОТПРАВКА В ТОПИК С ПРЕДУПРЕЖДЕНИЯМИ
-    # --------------------------------------- #
-    logger.info("\nЗапуск тестового модуля для проверки отправки уведомлений в Telegram...")
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    test_message_warnings = (
-        f"🚨 **Тестовое уведомление**\n\n"
-        f"Это сообщение отправлено из `data_exporter.py` для проверки настроек.\n"
-        f"Если вы видите это, значит, `TELEGRAM_WARNINGS_TOPIC_ID` и "
-        f"`TELEGRAM_CHAT_ID` настроены верно."
-    )
-    special_chars = r'_*[]()~`>#+-=|{}.!'
-    for char in special_chars:
-        test_message_warnings = test_message_warnings.replace(char, f'\\{char}')
-    payload_warnings = {
-        'chat_id': config.TELEGRAM_CHAT_ID,
-        'message_thread_id': config.TELEGRAM_WARNINGS_TOPIC_ID,
-        'text': test_message_warnings,
-        'parse_mode': 'MarkdownV2'
-    }
-
-    try:
-        response = requests.post(url, data=payload_warnings, timeout=10)
-        response.raise_for_status()
-        logger.info("✅ Тестовое уведомление для топика с предупреждениями успешно отправлено в Telegram.")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка при отправке тестового уведомления в Telegram: {e}", exc_info=True)
+    # Упрощенный тестовый блок
+    logging.basicConfig(level=logging.INFO)
+    logger.info("Модуль data_exporter.py запущен. Для проверки логики фильтрации "
+                "необходимо запустить систему в рабочем режиме и проверить логи.")

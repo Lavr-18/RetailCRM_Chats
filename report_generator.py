@@ -2,25 +2,29 @@ import logging
 import os
 import sys
 import re
-from datetime import datetime, date, time, timedelta
-from glob import glob
 import requests
+from datetime import datetime, date, timedelta, time as dt_time
+from glob import glob
 from typing import List, Dict, Any
 
 # Добавляем корневую директорию проекта в sys.path
+# Это необходимо, чтобы импортировать config и data_exporter
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
 # Импортируем модули
 import config
-from data_exporter import send_to_telegram
-from data_exporter import normalize_phone
-from data_exporter import process_and_export_data  # <-- ДОБАВЛЕНО: для принудительного закрытия
+# Импортируем только необходимые функции из data_exporter
+from data_exporter import normalize_phone, process_and_export_data
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
-# --- Константы и настройки времени (без изменений) ---
+# --- Константы и настройки времени ---
+DIALOG_DIR_ACTIVE = 'dialogs/active'
+DIALOG_DIR_CLOSED = 'dialogs/closed'
+DIALOG_FILE_REGEX = r'dialog_(\d+)_(\d+)\.txt'
+MAX_DIALOG_AGE_DAYS = 3  # Максимальный возраст диалога для удаления (3 дня)
 
 # Группа "Новый" для Метрики 2
 STATUS_GROUP_NEW = {"new", "gotovo-k-soglasovaniiu", "agree-absence"}
@@ -43,13 +47,38 @@ PAYMENT_STATUSES = {
 MAX_ORDER_AGE_DAYS = 2
 
 # Рабочее время для метрик 3, 4, 5: 9:00 до 20:00
-WORK_START_TIME = time(9, 0)
-WORK_END_TIME = time(20, 0)
-# Время составления отчета
-REPORT_END_TIME = time(23, 30)
+WORK_START_TIME = dt_time(9, 0)
+WORK_END_TIME = dt_time(20, 0)
+# Время составления отчета (используется для метрик, не для планирования)
+REPORT_END_TIME = dt_time(23, 30)
 
 
-# --- Вспомогательные функции (без изменений) ---
+# --- НОВАЯ ФУНКЦИЯ: Отправка отчета в Telegram (вместо использования data_exporter.send_to_telegram) ---
+def send_report_to_telegram(text: str, topic_id: str):
+    """
+    Отправляет уведомление в Telegram-группу с поддержкой тем.
+    """
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': config.TELEGRAM_CHAT_ID,
+        'message_thread_id': topic_id,
+        'text': text,
+        'parse_mode': 'HTML'  # Используем HTML, так как в отчете используются теги <b> и <a>
+    }
+
+    # Экранирование специальных символов для HTML не требуется в таком объеме, как для MarkdownV2,
+    # но нужно убедиться, что текст не содержит неэкранированных HTML-сущностей,
+    # которые могут нарушить формат.
+
+    try:
+        response = requests.post(url, data=payload)
+        response.raise_for_status()
+        logger.info("Отчет успешно отправлен в Telegram.")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Ошибка при отправке отчета в Telegram: {e}")
+
+
+# --- Вспомогательные функции ---
 
 def format_timedelta(td: timedelta) -> str:
     """Форматирует timedelta в строку вида 'Чч мс'."""
@@ -70,105 +99,125 @@ def format_timedelta(td: timedelta) -> str:
 
 
 def parse_dialog_line(line: str) -> dict | None:
+    """Парсит одну строку диалога."""
     match = re.match(r'^\[(.*?)\] (КЛИЕНТ|МЕНЕДЖЕР): (.*)$', line)
     if not match: return None
     timestamp_str, sender, content = match.groups()
     try:
+        # Учитываем, что метка времени может содержать микросекунды
         dt = datetime.fromisoformat(timestamp_str)
     except ValueError:
         return None
     return {'time': dt, 'sender': sender, 'content': content.strip()}
 
 
-def get_dialog_data(file_path: str) -> dict | None:
+def get_dialog_file_details(file_path: str) -> dict | None:
+    """
+    Извлекает ID, телефон, первое и последнее сообщение из файла диалога.
+    Возвращает dict: {'dialog_id', 'client_phone', 'messages', 'file_path',
+                     'first_message_time', 'last_message_time'}
+    """
     file_name = os.path.basename(file_path)
-    match = re.match(r'dialog_(\d+)_(\d+)\.txt', file_name)
+    match = re.match(DIALOG_FILE_REGEX, file_name)
     if not match: return None
-    dialog_id = int(match.group(1));
+
+    dialog_id = int(match.group(1))
     client_phone = match.group(2)
     messages = []
+
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f:
                 parsed_msg = parse_dialog_line(line.strip())
                 if parsed_msg: messages.append(parsed_msg)
-        if not messages: return None
-        return {'dialog_id': dialog_id, 'client_phone': client_phone, 'messages': messages, 'file_path': file_path,
-                'first_message_time': messages[0]['time']}
+
+        if not messages:
+            return None
+
+        return {
+            'dialog_id': dialog_id,
+            'client_phone': client_phone,
+            'messages': messages,
+            'file_path': file_path,
+            'first_message_time': messages[0]['time'],
+            'last_message_time': messages[-1]['time']  # <--- ДОБАВЛЕНО: Время последнего сообщения
+        }
     except Exception as e:
         logger.error(f"Ошибка при чтении или парсинге файла {file_path}: {e}", exc_info=True)
         return None
 
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ ПРИНУДИТЕЛЬНОГО ЗАКРЫТИЯ ---
-
-def close_active_dialogs():
+def manage_and_get_dialogs(report_date: date) -> List[Dict[str, Any]]:
     """
-    Принудительно 'закрывает' (анализирует и перемещает) все диалоги,
-    оставшиеся в dialogs/active, используя функцию из data_exporter.py.
+    Реализует новую логику управления файлами:
+    1. Удаляет диалоги, старше 3 дней (по дате последнего сообщения).
+    2. Перемещает диалоги, закрытые сегодня, из 'active' в 'closed' и добавляет их в отчет.
+    3. Собирает диалоги из 'closed', закрытые сегодня, для отчета.
     """
-    active_dir = 'dialogs/active'
+    # 3 дня назад (для удаления старых файлов)
+    deletion_limit_dt = datetime.now() - timedelta(days=MAX_DIALOG_AGE_DAYS)
 
-    if not os.path.exists(active_dir):
-        logger.warning(f"Директория {active_dir} не найдена. Пропуск принудительного закрытия.")
-        return
+    all_files_for_check = glob(os.path.join(DIALOG_DIR_ACTIVE, 'dialog_*.txt')) + \
+                          glob(os.path.join(DIALOG_DIR_CLOSED, 'dialog_*.txt'))
 
-    # Находим все файлы в active/
-    active_files = glob(os.path.join(active_dir, 'dialog_*.txt'))
+    today_dialogs_for_report = []
 
-    if not active_files:
-        logger.info("В папке active/ нет файлов для принудительного закрытия.")
-        return
-
-    closed_count = 0
-
-    for file_path in active_files:
+    for file_path in all_files_for_check:
         file_name = os.path.basename(file_path)
+        details = get_dialog_file_details(file_path)
 
-        # Извлекаем dialog_id и client_phone из имени файла: dialog_{dialog_id}_{client_phone}.txt
-        match = re.match(r'dialog_(\d+)_(\d+)\.txt', file_name)
+        if not details:
+            logger.warning(f"Не удалось получить детали для файла: {file_name}. Пропуск.")
+            continue
 
-        if match:
-            dialog_id = int(match.group(1))
-            client_phone = match.group(2)
+        last_msg_time = details['last_message_time']
 
+        # 1. Проверка на удаление (старше 3 дней)
+        if last_msg_time < deletion_limit_dt:
             try:
-                logger.info(f"Принудительное закрытие диалога {dialog_id} по расписанию...")
-
-                # Вызываем вашу существующую функцию, которая выполнит анализ и перемещение
-                process_and_export_data(dialog_id, client_phone)
-                closed_count += 1
-
+                os.remove(file_path)
+                logger.info(f"🗑️ Удален старый диалог (дата последнего сообщения {last_msg_time.date()}): {file_name}")
             except Exception as e:
-                logger.error(f"❌ Ошибка при принудительном закрытии диалога {dialog_id}: {e}")
-        else:
-            logger.warning(f"Не удалось распарсить ID и телефон из имени файла: {file_name}")
+                logger.error(f"❌ Ошибка при удалении файла {file_name}: {e}")
+            continue
 
-    logger.info(f"✅ Успешно принудительно 'закрыто' {closed_count} активных диалогов.")
+        # 2. Проверка на включение в отчет (последнее сообщение сегодня)
+        if last_msg_time.date() == report_date:
+
+            # Если диалог в active, его нужно закрыть (проанализировать и переместить)
+            if file_path.startswith(DIALOG_DIR_ACTIVE):
+                dialog_id = details['dialog_id']
+                client_phone = details['client_phone']
+
+                logger.info(
+                    f"Принудительное закрытие (анализ + перемещение) активного диалога {dialog_id} для отчета...")
+
+                # process_and_export_data выполнит анализ и перемещение в 'closed'
+                # ВАЖНО: После этого вызова файл может быть уже в 'closed', но объект 'details'
+                # остается валидным для включения в отчет.
+                try:
+                    # Принудительно вызываем анализ и перемещение (как при событии dialog_closed)
+                    process_and_export_data(dialog_id, client_phone)
+
+                    # Добавляем детали (сообщения) в список для отчета
+                    today_dialogs_for_report.append(details)
+
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при принудительном закрытии диалога {dialog_id} для отчета: {e}")
+
+            # Если диалог уже в closed И был закрыт сегодня (по дате последнего сообщения), включаем его в отчет
+            elif file_path.startswith(DIALOG_DIR_CLOSED):
+                today_dialogs_for_report.append(details)
+
+    logger.info(f"Найдено {len(today_dialogs_for_report)} диалогов с последним сообщением за {report_date}.")
+    return today_dialogs_for_report
 
 
-# --- ОБНОВЛЕННАЯ ФУНКЦИЯ ПОЛУЧЕНИЯ ДИАЛОГОВ (теперь ищет только в closed) ---
+# --- Остальные функции (без изменений) ---
 
-def get_current_day_dialogs(target_date: date) -> List[Dict[str, Any]]:
-    """
-    Ищет диалоги, начатые в target_date, только в папке CLOSED.
-    """
-    # Ищем только в закрытых диалогах
-    all_files = glob('dialogs/closed/dialog_*.txt')
-    today_dialogs = []
+# ... [Остальные функции: check_order_modification_today, get_relevant_orders_for_client,
+# get_day_in_day_paid_orders, analyze_dialog_speed_and_status, process_new_dialogs остаются без изменений] ...
 
-    for file_path in all_files:
-        dialog_data = get_dialog_data(file_path)
-
-        # Фильтруем диалоги по дате их первого сообщения
-        if dialog_data and dialog_data['first_message_time'].date() == target_date:
-            today_dialogs.append(dialog_data)
-
-    logger.info(f"Найдено {len(today_dialogs)} диалогов, начатых {target_date}, в папке CLOSED.")
-    return today_dialogs
-
-
-# --- Функции для работы с RetailCRM (без изменений) ---
 
 def check_order_modification_today(order_id: int, target_date: date) -> bool:
     """
@@ -345,8 +394,6 @@ def get_day_in_day_paid_orders(target_date: date) -> List[Dict[str, Any]]:
         return []
 
 
-# --- Логика расчета Метрик 3, 4 и 5 (без изменений) ---
-
 def analyze_dialog_speed_and_status(dialog: dict) -> dict:
     messages = dialog['messages']
     response_times = []
@@ -390,8 +437,6 @@ def analyze_dialog_speed_and_status(dialog: dict) -> dict:
         'response_times': response_times
     }
 
-
-# --- Логика расчета Метрик 1 и 2 (Обновлена) ---
 
 def process_new_dialogs(dialogs: list) -> dict:
     """
@@ -456,18 +501,14 @@ def process_new_dialogs(dialogs: list) -> dict:
 # --- Основная логика генерации отчета ---
 
 def generate_daily_report():
-    # --- ТЕСТОВЫЙ РЕЖИМ (ВРЕМЕННО): Запуск отчета за ВЧЕРАШНИЙ день ---
-    # Для имитации запуска cron в 23:30 за прошедший день.
-    report_date = datetime.now().date() - timedelta(days=1)
-    # ----------------------------------------------------------------------
+    # ИСПРАВЛЕНИЕ #2: Расчет даты
+    # Отчет запускается в 23:00 и должен быть за текущий день.
+    report_date = datetime.now().date()
 
     logger.info(f"=== Начало генерации ежедневного отчета за {report_date} ===")
 
-    # НОВЫЙ ШАГ: Сначала принудительно закрываем (анализируем и перемещаем) все оставшиеся активные чаты
-    close_active_dialogs()
-
-    # Шаг 1: Получаем все диалоги, начатые сегодня (теперь только из CLOSED)
-    dialogs_for_today = get_current_day_dialogs(report_date)
+    # НОВЫЙ ШАГ: Управление файлами, удаление старых, закрытие активных и сбор диалогов для отчета
+    dialogs_for_today = manage_and_get_dialogs(report_date)
 
     if not dialogs_for_today:
         logger.info("Нет новых диалогов для анализа за выбранный день. Отправка отчета пропущена.")
@@ -480,6 +521,9 @@ def generate_daily_report():
     unanswered_non_working_count = 0
 
     for dialog in dialogs_for_today:
+        # Диалоги, которые были в 'active' и принудительно 'закрыты' выше, уже содержат
+        # результат анализа (который происходит внутри process_and_export_data).
+        # Однако, для расчета метрик 3, 4, 5 нам нужны сообщения.
         speed_and_status = analyze_dialog_speed_and_status(dialog)
 
         all_response_times_td.extend(speed_and_status['response_times'])
@@ -497,12 +541,15 @@ def generate_daily_report():
     report_data_1_2 = process_new_dialogs(dialogs_for_today)
 
     # Шаг 3: Финальный расчет среднего времени (Метрика 3)
-    total_avg_response_time = sum(all_response_times_td, timedelta()) / len(
-        all_response_times_td) if all_response_times_td else None
+    # Используем len() == 0, чтобы избежать ошибки деления на ноль, если all_response_times_td пуст
+    if all_response_times_td:
+        total_avg_response_time = sum(all_response_times_td, timedelta()) / len(all_response_times_td)
+    else:
+        total_avg_response_time = None
 
     # Шаг 4: Расчет метрики 6: Закрытие день в день
 
-    # 4.1. Получаем уникальные телефоны клиентов, которые обратились сегодня
+    # 4.1. Получаем уникальные телефоны клиентов, которые обратились сегодня (по последнему сообщению)
     today_appeal_phones = {normalize_phone(d['client_phone']) for d in dialogs_for_today}
 
     # 4.2. Получаем заказы, созданные И оплаченные сегодня
@@ -562,7 +609,8 @@ def generate_daily_report():
         f"6. Закрытие день в день (шт/сумма): <b>{day_in_day_count} шт. / {day_in_day_sum:,.0f} руб.</b>"
     )
 
-    send_to_telegram(report_summary, config.TELEGRAM_TOPIC_ID) # Раскомментировать, когда будет настроен cron
+    # ИСПРАВЛЕНИЕ #3: Используем новую функцию, которая корректно обрабатывает токен и тему
+    send_report_to_telegram(report_summary, config.TELEGRAM_TOPIC_ID)
     print("\n--- Сгенерированный Отчет ---\n" + report_summary)
 
     logger.info("=== Генерация отчета завершена. ===")
