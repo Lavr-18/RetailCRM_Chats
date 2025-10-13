@@ -290,7 +290,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
 
                 # Объединяем данные для Google Forms (с критериями)
                 google_forms_data = {
-                    'entry.408402535': order_link,
+                    'entry.408402535': order_link, # Ссылка на заказ
                     'entry.711063137': total_summ,
                     'entry.90684815': customer_type,
                     'entry.1744925750': manager_name,
@@ -317,10 +317,10 @@ def process_and_export_data(dialog_id: int, client_phone: str):
             should_analyze = False
 
     if not should_analyze:
-        # 5. Экспорт базовых данных (Tier 2)
+        # 5. Экспорт базовых данных (Tier 2) - Таблица Хранение чатов
         # Собираем данные для Google Forms без критериев
         google_forms_data_free = {
-            'entry.1563894862': order_number,  # Номер заказа
+            'entry.1563894862': order_link,  # ИЗМЕНЕНИЕ: Отправляем order_link вместо order_number
             'entry.844658380': total_summ,  # Сумма заказа
             'entry.1126205710': customer_type,  # Физ/Юр
             'entry.3334402': dialog_text  # Диалог

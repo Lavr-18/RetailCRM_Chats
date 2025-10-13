@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 # --- Константы и конфигурация для OpenAI ---
 try:
+    # Используем config.OPENAI_API_KEY, который загружается через load_dotenv() в config.py
     OPENAI_API_KEY = config.OPENAI_API_KEY
     if not OPENAI_API_KEY:
         logger.error("Переменная OPENAI_API_KEY пуста. Пожалуйста, проверьте файл .env.")
@@ -24,25 +25,36 @@ except AttributeError:
 # Инициализируем клиент OpenAI с новым синтаксисом
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-# Рекомендация: gpt-4o-mini - самая надежная и экономичная модель для
-# стабильного структурированного вывода (JSON) и резюмирования.
+# Финальный выбор: gpt-5-mini. Обеспечивает баланс надежности и экономии.
 RECOMMENDED_MODEL = "gpt-5-mini"
 
 
 def parse_openai_response(response: str) -> tuple[dict, str] | None:
     """
     Парсит ответ от OpenAI, разделяя JSON и SUMMARY.
+    Парсер теперь проверяет два формата: обернутый (```json) и необернутый (прямой JSON перед ---SUMMARY---).
     """
     logger.debug(f"Начало парсинга ответа OpenAI. Длина ответа: {len(response)} символов.")
+    json_part = None
 
-    # Используем регулярное выражение для поиска блока с JSON
+    # 1. Попытка найти блок JSON, обернутый в тройные кавычки с тегом json (идеальный формат)
     json_match = re.search(r'```json\s*({.*?})\s*```', response, re.DOTALL)
 
-    if not json_match:
+    if json_match:
+        json_part = json_match.group(1).strip()
+        logger.debug("JSON-блок найден в обертке '```json'.")
+    else:
+        # 2. Попытка найти НЕОБЕРНУТЫЙ блок JSON, который стоит перед ---SUMMARY---
+        # Ищем от начала строки/контента до разделителя ---SUMMARY---
+        unwrapped_match = re.search(r'({.*?})\s*---SUMMARY---', response, re.DOTALL)
+
+        if unwrapped_match:
+            logger.warning("JSON-блок найден, но без обертки '```json'. Используем необернутый контент.")
+            json_part = unwrapped_match.group(1).strip()
+
+    if not json_part:
         logger.error("В ответе OpenAI не найден блок JSON.")
         return None, None
-
-    json_part = json_match.group(1).strip()
 
     # Теперь ищем разделитель для summary
     summary_match = re.search(r'---SUMMARY---(.*)', response, re.DOTALL)
@@ -78,6 +90,8 @@ def analyze_dialog(dialog_text: str, categories: list) -> tuple[dict, str] | Non
     Отправляет диалог в OpenAI API для анализа и возвращает структурированные данные и резюме.
     """
     logger.info(f"Начало анализа диалога с помощью OpenAI, модель: {RECOMMENDED_MODEL}.")
+    # Используем PROMPT_TEMPLATE из config.
+    # PROMPT_TEMPLATE теперь использует {0} и {1} для большей надежности (исправлено в config.py).
     prompt = PROMPT_TEMPLATE.format(
         ", ".join([f"'{cat}'" for cat in categories]),
         dialog_text
@@ -92,6 +106,7 @@ def analyze_dialog(dialog_text: str, categories: list) -> tuple[dict, str] | Non
         logger.info("Запрос к OpenAI успешно выполнен.")
 
         raw_response = response.choices[0].message.content
+        # Уровень DEBUG покажет сырой ответ в логах
         logger.debug(f"Raw OpenAI response:\n{raw_response}")
 
         json_data, summary = parse_openai_response(raw_response)
@@ -135,14 +150,15 @@ def parse_dialog_file(file_path: str) -> str | None:
         return None
 
 
-# --- ТЕСТОВЫЙ МОДУЛЬ (Вывод сырого ответа API) ---
+# --- ФИНАЛЬНЫЙ ТЕСТОВЫЙ МОДУЛЬ (ПРОВЕРКА ПАРСИНГА) ---
 if __name__ == "__main__":
     # Настройка логирования для тестового запуска
+    # Уровень INFO покажет финальный результат
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     logger.info("=======================================")
-    logger.info("ЗАПУСК ТЕСТА: ПОЛУЧЕНИЕ СЫРОГО ОТВЕТА API")
+    logger.info("ЗАПУСК ТЕСТОВОГО АНАЛИЗА ДИАЛОГА (OpenAI)")
     logger.info("=======================================")
 
     test_dialog = """
@@ -152,33 +168,26 @@ if __name__ == "__main__":
 [2025-10-11T10:42:15.985703] КЛИЕНТ: Прсчитайте, пожалуйста. Все вместе можно будет привезти.
     """
 
-    # Используем статические категории из config.py для теста
-    test_categories = ['установление_контакта', 'выявление_потребностей', 'квалификация',
-                       'презентация', 'возражение', 'отработка_возражения',
-                       'проговорены_договоренности', 'закрытие_на_оплату']
-
-    # Формируем полный промпт, как это делает analyze_dialog
-    prompt = PROMPT_TEMPLATE.format(
-        ", ".join([f"'{cat}'" for cat in test_categories]),
-        test_dialog
-    )
+    # Теперь используем config.CATEGORIES для классификации
+    test_categories_for_model = config.CATEGORIES
 
     try:
-        logger.info(f"Отправка запроса на модель: {RECOMMENDED_MODEL}...")
+        # Выполняем анализ
+        # Передаем список категорий для классификации (Заказ, Консультация, и т.д.)
+        result_json, result_summary = analyze_dialog(test_dialog, test_categories_for_model)
 
-        # Выполняем прямой вызов API
-        response = client.chat.completions.create(
-            model=RECOMMENDED_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        logger.info("Запрос к OpenAI успешно выполнен (HTTP 200 OK).")
-
-        raw_response = response.choices[0].message.content
-
-        logger.info("\n--- ПОЛНЫЙ СЫРОЙ ОТВЕТ ОТ API ---")
-        # Выводим весь ответ, чтобы увидеть, где находится JSON
-        print(raw_response)
-        logger.info("--- КОНЕЦ СЫРОГО ОТВЕТА ---\n")
+        if result_json and result_summary:
+            logger.info("\n=======================================")
+            logger.info("✅ АНАЛИЗ УСПЕШНО ЗАВЕРШЕН")
+            logger.info("=======================================")
+            print("\n--- СТРУКТУРИРОВАННЫЙ JSON (СКОРИНГ) ---")
+            # Печатаем JSON, что подтверждает успешный парсинг
+            print(json.dumps(result_json, indent=4, ensure_ascii=False))
+            print("\n--- РЕЗЮМЕ (SUMMARY) ---")
+            print(result_summary)
+            print("=======================================\n")
+        else:
+            logger.error("\n❌ АНАЛИЗ ЗАВЕРШЕН С ОШИБКОЙ ИЛИ НЕ ВЕРНУЛ ВАЛИДНЫХ ДАННЫХ.")
 
     except Exception as e:
-        logger.error(f"Критическая ошибка при получении сырого ответа: {e}", exc_info=True)
+        logger.error(f"Критическая ошибка в тестовом модуле: {e}", exc_info=True)
