@@ -301,7 +301,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                     'entry.154941084': openai_json_data.get('презентация', 0),
                     'entry.45434250': openai_json_data.get('возражение', 0),
                     'entry.830702183': openai_json_data.get('отработка_возражения', 0),
-                    'entry.2001468013': openai_json_data.get('проговорены_договоренности', 0),
+                    'entry.2001468013': openai_json_data.get('проговорить_договоренности', 0),
                     'entry.1565546251': openai_json_data.get('закрытие_на_оплату', 0)
                 }
 
