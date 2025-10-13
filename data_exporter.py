@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # --- Вспомогательные функции ---
+# (Функции normalize_phone, move_dialog_to_closed, get_latest_order_details_from_phone, get_manager_details_from_id, send_to_google_forms, send_to_google_forms_free, send_to_telegram без изменений)
 
 def normalize_phone(phone_str: str) -> str:
     """
@@ -289,6 +290,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                 )
 
                 # Объединяем данные для Google Forms (с критериями)
+                # Теперь мы уверены, что OpenAI использует короткие, фиксированные ключи.
                 google_forms_data = {
                     'entry.408402535': order_link, # Ссылка на заказ
                     'entry.711063137': total_summ,
@@ -298,11 +300,12 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                     'entry.1213746785': openai_json_data.get('установление_контакта', 0),
                     'entry.812648406': openai_json_data.get('выявление_потребностей', 0),
                     'entry.567411627': openai_json_data.get('квалификация', 0),
-                    'entry.154941084': openai_json_data.get('презентация', 0),
-                    'entry.45434250': openai_json_data.get('возражение', 0),
+                    'entry.154941084': openai_json_data.get('презентация', 0),             # Короткий ключ
+                    'entry.45434250': openai_json_data.get('возражение', 0),               # Короткий ключ
                     'entry.830702183': openai_json_data.get('отработка_возражения', 0),
                     'entry.2001468013': openai_json_data.get('проговорить_договоренности', 0),
-                    'entry.1565546251': openai_json_data.get('закрытие_на_оплату', 0)
+                    'entry.1565546251': openai_json_data.get('закрытие_на_оплату', 0),
+                    'entry.982776944': openai_json_data.get('уточнил_цель_покупки', 0)     # Короткий ключ
                 }
 
                 send_to_google_forms(google_forms_data)
