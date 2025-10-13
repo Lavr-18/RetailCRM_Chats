@@ -6,6 +6,7 @@ import requests
 from datetime import datetime, date, timedelta, time as dt_time
 from glob import glob
 from typing import List, Dict, Any
+import pytz # <-- ДОБАВЛЕНО: Для работы с часовыми поясами
 
 # Добавляем корневую директорию проекта в sys.path
 # Это необходимо, чтобы импортировать config и data_exporter
@@ -25,6 +26,7 @@ DIALOG_DIR_ACTIVE = 'dialogs/active'
 DIALOG_DIR_CLOSED = 'dialogs/closed'
 DIALOG_FILE_REGEX = r'dialog_(\d+)_(\d+)\.txt'
 MAX_DIALOG_AGE_DAYS = 3  # Максимальный возраст диалога для удаления (3 дня)
+MOSCOW_TZ = pytz.timezone('Europe/Moscow') # <-- ДОБАВЛЕНО: Московский часовой пояс
 
 # Группа "Новый" для Метрики 2
 STATUS_GROUP_NEW = {"new", "gotovo-k-soglasovaniiu", "agree-absence"}
@@ -106,6 +108,14 @@ def parse_dialog_line(line: str) -> dict | None:
     try:
         # Учитываем, что метка времени может содержать микросекунды
         dt = datetime.fromisoformat(timestamp_str)
+
+        # --- ИСПРАВЛЕНИЕ ЧАСОВОГО ПОЯСА ---
+        # 1. Привязываем наивное время к UTC (времени контейнера)
+        dt_utc = pytz.utc.localize(dt)
+        # 2. Переводим его в Московское время
+        dt_msk = dt_utc.astimezone(MOSCOW_TZ)
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
     except ValueError:
         return None
     return {'time': dt, 'sender': sender, 'content': content.strip()}
@@ -501,9 +511,10 @@ def process_new_dialogs(dialogs: list) -> dict:
 # --- Основная логика генерации отчета ---
 
 def generate_daily_report():
-    # ИСПРАВЛЕНИЕ #2: Расчет даты
-    # Отчет запускается в 23:00 и должен быть за текущий день.
-    report_date = datetime.now().date()
+    # ИСПРАВЛЕНИЕ: Расчет даты
+    # Используем Московское время для определения даты, за которую составляется отчет
+    now_msk = datetime.now(MOSCOW_TZ)  # <-- Использование MSK
+    report_date = now_msk.date()
 
     logger.info(f"=== Начало генерации ежедневного отчета за {report_date} ===")
 
