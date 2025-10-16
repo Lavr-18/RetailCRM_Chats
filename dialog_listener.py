@@ -1,21 +1,21 @@
-# dialog_listener.py
-
 import json
 import logging
 import os
 import time
 import requests
 import websocket
-import pytz  # <-- ДОБАВЛЕНО: Для работы с часовыми поясами
+import pytz
 from threading import Thread
-from datetime import datetime, time as dt_time  # time переименован в dt_time
+from datetime import datetime, time as dt_time
 import re
 import urllib.parse
 
 # Импортируем новые модули
 from dialog_analyser import analyze_dialog
 from data_exporter import move_dialog_to_closed, process_and_export_data
-from report_generator import generate_daily_report  # <-- ДОБАВЛЕНО: для запуска отчета
+from report_generator import generate_daily_report
+# ИМПОРТ НОВОЙ ЛОГИКИ:
+from retailcrm_api import create_ad_hoc_avito_task
 
 # Настройка логирования для этого модуля (можно использовать тот же, что и в main.py)
 logger = logging.getLogger(__name__)
@@ -49,6 +49,10 @@ MAX_RECONNECT_DELAY = 60
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 LAST_REPORT_DATE = None  # Хранит дату последнего запуска отчета (чтобы не запускать его чаще раза в день)
 
+# ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ ПРОВЕРКИ ПЕРВОГО СООБЩЕНИЯ С AVITO
+# Хранит ID диалогов, для которых уже была поставлена задача
+AVITO_TASK_COMPLETED_DIALOGS = set()
+
 
 # --------------------------------------- #
 #           Вспомогательные функции
@@ -68,7 +72,6 @@ def send_telegram_notification(text: str, topic_id: str):
 
     # Экранируем специальные символы для MarkdownV2
     special_chars = r'_*[]()~`>#+-=|{}.!'
-    # Важно: экранировать нужно исходный текст, не модифицированный.
     clean_text = text
     for char in special_chars:
         clean_text = clean_text.replace(char, f'\\{char}')
@@ -147,12 +150,14 @@ def save_message_to_file(dialog_id: int, client_phone: str, sender_type: str, me
 # --------------------------------------- #
 #   Callbacks WebSocket для RetailCRM
 # --------------------------------------- #
-# (on_message, on_error, on_close, on_open - без изменений)
+
 def on_message(ws, message):
     """
     Вызывается при входящем сообщении по WebSocket.
     Парсит JSON и сохраняет все сообщения.
     """
+    global AVITO_TASK_COMPLETED_DIALOGS
+
     try:
         data = json.loads(message)
         # --- БЛОК ОТЛАДКИ: Вывод полной информации о сообщении ---
@@ -169,13 +174,43 @@ def on_message(ws, message):
             client_phone = message_data.get("chat", {}).get("customer", {}).get("phone", "Неизвестно")
             timestamp = datetime.now().isoformat()
 
+            # Извлекаем данные о канале и ответственном менеджере
+            channel_name = message_data.get("chat", {}).get("channel", {}).get("name")
+            responsible_manager_id = message_data.get("chat", {}).get("last_dialog", {}).get("responsible", {}).get(
+                "external_id")
+
             if not dialog_id:
                 logger.warning("Отсутствует dialog_id, пропускаем")
                 return
 
             if sender_type in ["user", "customer"]:
-                # Проверяем наличие подозрительных ссылок, если отправитель - менеджер
+                # Проверяем наличие подозрительных ссылок, если отправитель - менеджер (это нелогично, но оставим, если так было задумано)
+                # Логичнее проверять, когда sender_type == 'user' (менеджер), но в RetailCRM Chat Messages
+                # 'user' означает менеджера, а 'customer' - клиента. В вашем примере 'from.type' = 'user' или 'customer'.
+                # В вашем логе с Avito, первое сообщение - 'customer', второе - 'user' (менеджер).
                 check_for_unauthorized_links(message_data)
+
+                # --- НОВАЯ ЛОГИКА: ПОСТАНОВКА ЗАДАЧИ ДЛЯ AVITO ---
+                if (
+                        dialog_id not in AVITO_TASK_COMPLETED_DIALOGS and
+                        sender_type == 'customer' and  # Это должно быть первое сообщение от клиента
+                        channel_name == 'Avito Авито' and
+                        client_phone == 'Неизвестно' and  # Подтверждает, что у клиента нет номера телефона
+                        responsible_manager_id  # Должен быть уже назначен ответственный
+                ):
+                    logger.info(
+                        f"Обнаружено первое сообщение с Avito в диалоге {dialog_id} с manager_id {responsible_manager_id}. Ставим задачу.")
+
+                    # Запускаем постановку задачи в отдельном потоке, чтобы не блокировать WebSocket
+                    task_thread = Thread(
+                        target=create_ad_hoc_avito_task,
+                        args=(responsible_manager_id,)
+                    )
+                    task_thread.start()
+
+                    # Добавляем ID в set, чтобы избежать дублирования задачи
+                    AVITO_TASK_COMPLETED_DIALOGS.add(dialog_id)
+                # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 
                 # Сохраняем сообщение в файл
                 if incoming_type == "text":
@@ -209,6 +244,10 @@ def on_message(ws, message):
                     args=(dialog_id, client_phone)
                 )
                 thread.start()
+
+                # После закрытия диалога удаляем его из set, чтобы в будущем,
+                # если диалог будет открыт снова, можно было снова поставить задачу
+                AVITO_TASK_COMPLETED_DIALOGS.discard(dialog_id)
             else:
                 logger.warning("Получено событие dialog_closed, но отсутствует dialog_id.")
 
