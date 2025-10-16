@@ -5,6 +5,7 @@ import json
 import requests
 import datetime
 import re
+from datetime import datetime, timedelta  # <-- ИЗМЕНЕНИЕ: Добавлен импорт для работы с датами
 
 # Добавляем корневую директорию проекта в sys.path для импорта других модулей
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 # --- Вспомогательные функции ---
-# (Функции normalize_phone, move_dialog_to_closed, get_latest_order_details_from_phone, get_manager_details_from_id, send_to_google_forms, send_to_google_forms_free, send_to_telegram без изменений)
 
 def normalize_phone(phone_str: str) -> str:
     """
@@ -202,7 +202,7 @@ def send_to_telegram(summary: str):
 def process_and_export_data(dialog_id: int, client_phone: str):
     """
     Центральная функция для обработки и экспорта данных закрытого диалога.
-    Включает логику фильтрации по статусу и методу заказа.
+    Включает логику фильтрации по статусу, методу заказа и дате создания.
     """
     logger.info(f"=== Начало обработки закрытого диалога {dialog_id} ===")
 
@@ -254,6 +254,32 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                 last_name = manager_details.get('lastName', '')
                 manager_name = f"{first_name} {last_name}".strip()
 
+        # --- НОВЫЙ КОД ДЛЯ ПРОВЕРКИ ДАТЫ: Заказ должен быть не старше 2 дней ---
+        order_created_at_str = order_details.get('createdAt')
+        is_recent_order = False
+
+        if order_created_at_str:
+            try:
+                # Парсинг даты в формате "YYYY-MM-DD HH:MM:SS"
+                order_time = datetime.strptime(order_created_at_str, '%Y-%m-%d %H:%M:%S')
+
+                # Сравниваем с текущим временем минус 2 дня
+                two_days_ago = datetime.now() - timedelta(days=2)
+
+                if order_time >= two_days_ago:
+                    is_recent_order = True
+                else:
+                    logger.info(
+                        f"Заказ {order_number} создан ({order_time}) более 2-х дней назад. Фильтрация по дате НЕ пройдена.")
+            except ValueError as e:
+                logger.error(
+                    f"❌ Ошибка парсинга даты заказа {order_number} с форматом '{order_created_at_str}': {e}. Пропускаем анализ по дате.",
+                    exc_info=True)
+            except Exception as e:
+                logger.error(f"❌ Непредвиденная ошибка при проверке даты заказа {order_number}: {e}", exc_info=True)
+        else:
+            logger.warning(f"В заказе {order_number} отсутствует поле 'createdAt'. Считаем НЕАКТУАЛЬНЫМ для анализа.")
+
         # 3. Проверка условий для полного анализа (Tier 1)
         order_status = order_details.get('status')
         order_method = order_details.get('orderMethod')
@@ -261,13 +287,30 @@ def process_and_export_data(dialog_id: int, client_phone: str):
         is_valid_status = order_status in config.RETAILCRM_VALID_STATUSES
         is_valid_method = order_method != config.INVALID_ORDER_METHOD
 
-        if is_valid_status and is_valid_method:
+        # ОБЪЕДИНЕНИЕ ВСЕХ УСЛОВИЙ
+        if is_valid_status and is_valid_method and is_recent_order:
             should_analyze = True
             logger.info(
-                f"Условия фильтрации выполнены (Status: {order_status}, Method: {order_method}). Будет произведен полный анализ OpenAI.")
+                f"Условия фильтрации выполнены (Status: {order_status}, Method: {order_method}, Recent: True). Будет произведен полный анализ OpenAI.")
         else:
-            logger.info(
-                f"Условия фильтрации НЕ выполнены (Status: {order_status}, Method: {order_method}). Производится базовый экспорт.")
+            # Обновленное логирование, показывающее причину.
+            reasons = []
+            if not is_valid_status: reasons.append(f"Status: {order_status}")
+            if not is_valid_method: reasons.append(f"Method: {order_method}")
+            # Добавляем причину, только если недавний заказ не прошел
+            if order_created_at_str and not is_recent_order: reasons.append("Order is OLDER than 2 days")
+
+            # Логируем причины, если они есть
+            if reasons:
+                logger.info(
+                    f"Условия фильтрации НЕ выполнены ({', '.join(reasons)}). Производится базовый экспорт.")
+            elif order_details and not order_created_at_str:
+                logger.info(
+                    "Условия фильтрации НЕ выполнены (Проблема с датой или другое). Производится базовый экспорт.")
+            else:
+                # По идее, этот else не должен срабатывать, если есть order_details
+                logger.info("Условия фильтрации НЕ выполнены. Производится базовый экспорт.")
+
     else:
         logger.info("Заказ для клиента не найден. Производится базовый экспорт.")
 
@@ -292,7 +335,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                 # Объединяем данные для Google Forms (с критериями)
                 # Теперь мы уверены, что OpenAI использует короткие, фиксированные ключи.
                 google_forms_data = {
-                    'entry.408402535': order_link, # Ссылка на заказ
+                    'entry.408402535': order_link,  # Ссылка на заказ
                     'entry.711063137': total_summ,
                     'entry.90684815': customer_type,
                     'entry.1744925750': manager_name,
@@ -300,12 +343,12 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                     'entry.1213746785': openai_json_data.get('установление_контакта', 0),
                     'entry.812648406': openai_json_data.get('выявление_потребностей', 0),
                     'entry.567411627': openai_json_data.get('квалификация', 0),
-                    'entry.154941084': openai_json_data.get('презентация', 0),             # Короткий ключ
-                    'entry.45434250': openai_json_data.get('возражение', 0),               # Короткий ключ
+                    'entry.154941084': openai_json_data.get('презентация', 0),  # Короткий ключ
+                    'entry.45434250': openai_json_data.get('возражение', 0),  # Короткий ключ
                     'entry.830702183': openai_json_data.get('отработка_возражения', 0),
                     'entry.2001468013': openai_json_data.get('проговорить_договоренности', 0),
                     'entry.1565546251': openai_json_data.get('закрытие_на_оплату', 0),
-                    'entry.982776944': openai_json_data.get('уточнил_цель_покупки', 0)     # Короткий ключ
+                    'entry.982776944': openai_json_data.get('уточнил_цель_покупки', 0)  # Короткий ключ
                 }
 
                 send_to_google_forms(google_forms_data)
