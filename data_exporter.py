@@ -5,7 +5,7 @@ import json
 import requests
 import datetime
 import re
-from datetime import datetime, timedelta  # <-- ИЗМЕНЕНИЕ: Добавлен импорт для работы с датами
+from datetime import datetime, timedelta
 
 # Добавляем корневую директорию проекта в sys.path для импорта других модулей
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +17,13 @@ import config
 
 # Настройка логирования для этого модуля
 logger = logging.getLogger(__name__)
+
+# --- НОВАЯ КОНСТАНТА: URL для экспорта таблицы "Анализ чатов 23.30" в CSV ---
+# ID таблицы: 1QhcIcPi3XMUPcKjwfM6983IkWn8Q-7xGoj49HzxC5BM
+# GID вкладки "Анализ чатов 23.30": 1207629789
+ANALYSIS_SHEET_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/1QhcIcPi3XMUPcKjwfM6983IkWn8Q-7xGoj49HzxC5BM/gviz/tq?tqx=out:csv&gid=1207629789"
+)
 
 
 # --- Вспомогательные функции ---
@@ -144,6 +151,72 @@ def get_manager_details_from_id(manager_id: int) -> dict | None:
         return None
 
 
+def is_order_link_in_analysis_sheet(order_link: str) -> bool:
+    """
+    Проверяет, присутствует ли данный order_link в столбце "Номер заказа"
+    таблицы "Анализ чатов 23.30" путем загрузки данных в формате CSV.
+    """
+    if order_link == 'Неизвестно':
+        logger.warning("Order link is 'Неизвестно', cannot check sheet. Assuming NOT present.")
+        return False
+
+    logger.info(f"Проверка наличия ссылки '{order_link}' в таблице анализа.")
+
+    try:
+        # Скачиваем данные как CSV (открытый доступ)
+        response = requests.get(ANALYSIS_SHEET_CSV_URL, timeout=10)
+        response.raise_for_status()
+
+        # Декодируем контент
+        content = response.content.decode('utf-8')
+        lines = content.splitlines()
+
+        if len(lines) < 2:
+            logger.warning("Таблица анализа пуста или содержит только заголовок. Пропускаем проверку.")
+            return False
+
+        # Заголовок (первая строка)
+        header = lines[0].strip().split(',')
+
+        # Находим индекс столбца "Номер заказа"
+        # Заголовки в CSV могут быть в кавычках
+        try:
+            link_column_index = header.index('"Номер заказа"')
+        except ValueError:
+            # Fallback: если не найдено, предполагаем, что это второй столбец (индекс 1)
+            # в соответствии с порядком в Google Forms (Отметка времени, Номер заказа)
+            if len(header) > 1 and header[1].strip().strip('"') in ['Номер заказа', 'Номер заказа / Order Link']:
+                link_column_index = 1
+                logger.warning("Заголовок 'Номер заказа' не найден точно. Используем столбец №2 (индекс 1).")
+            else:
+                logger.error("Не удалось определить столбец для проверки ссылок.")
+                return False
+
+        # Проверяем каждую строку, начиная со второй (данные)
+        for line in lines[1:]:
+            cells = line.strip().split(',')
+            if len(cells) > link_column_index:
+                # Извлекаем ссылку, удаляя возможные кавычки из ячейки
+                sheet_link = cells[link_column_index].strip().strip('"')
+
+                # Сравниваем ссылку
+                if sheet_link == order_link:
+                    logger.info("✅ Ссылка на заказ НАЙДЕНА в таблице анализа. Требуется базовый экспорт.")
+                    return True
+
+        logger.info("❌ Ссылка на заказ НЕ НАЙДЕНА в таблице анализа. Требуется полный анализ.")
+        return False
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка при доступе к Google Sheet: {e}. Считаем, что ссылка НЕ НАЙДЕНА.", exc_info=True)
+        # Если не смогли проверить, возвращаем False (требуется полный анализ)
+        return False
+    except Exception as e:
+        logger.error(f"❌ Непредвиденная ошибка при чтении Google Sheet: {e}. Считаем, что ссылка НЕ НАЙДЕНА.",
+                     exc_info=True)
+        return False
+
+
 def send_to_google_forms(data: dict):
     """
     Отправляет проанализированные данные в Google-таблицу через Google Forms
@@ -202,7 +275,8 @@ def send_to_telegram(summary: str):
 def process_and_export_data(dialog_id: int, client_phone: str):
     """
     Центральная функция для обработки и экспорта данных закрытого диалога.
-    Включает логику фильтрации по статусу, методу заказа и дате создания.
+    Включает логику фильтрации по статусу, методу заказа, дате создания
+    и наличию в таблице анализа.
     """
     logger.info(f"=== Начало обработки закрытого диалога {dialog_id} ===")
 
@@ -239,6 +313,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
     order_number = 'Неизвестно'
 
     if order_details:
+        # Формируем ссылку на заказ
         order_link = f"{config.RETAILCRM_BASE_URL}/orders/{order_details.get('slug', 'Неизвестно')}/edit"
         total_summ = order_details.get('totalSumm', 'Неизвестно')
         order_number = order_details.get('externalId', 'Неизвестно')
@@ -254,7 +329,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                 last_name = manager_details.get('lastName', '')
                 manager_name = f"{first_name} {last_name}".strip()
 
-        # --- НОВЫЙ КОД ДЛЯ ПРОВЕРКИ ДАТЫ: Заказ должен быть не старше 2 дней ---
+        # --- ПРОВЕРКА ДАТЫ: Заказ должен быть не старше 2 дней ---
         order_created_at_str = order_details.get('createdAt')
         is_recent_order = False
 
@@ -280,7 +355,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
         else:
             logger.warning(f"В заказе {order_number} отсутствует поле 'createdAt'. Считаем НЕАКТУАЛЬНЫМ для анализа.")
 
-        # 3. Проверка условий для полного анализа (Tier 1)
+        # 3. Проверка условий для полного анализа (Tier 1) - Начальные фильтры
         order_status = order_details.get('status')
         order_method = order_details.get('orderMethod')
 
@@ -291,26 +366,33 @@ def process_and_export_data(dialog_id: int, client_phone: str):
         if is_valid_status and is_valid_method and is_recent_order:
             should_analyze = True
             logger.info(
-                f"Условия фильтрации выполнены (Status: {order_status}, Method: {order_method}, Recent: True). Будет произведен полный анализ OpenAI.")
+                f"Начальные условия фильтрации выполнены (Status: {order_status}, Method: {order_method}, Recent: True).")
         else:
-            # Обновленное логирование, показывающее причину.
+            # Логирование причин, если начальные фильтры НЕ пройдены
             reasons = []
             if not is_valid_status: reasons.append(f"Status: {order_status}")
             if not is_valid_method: reasons.append(f"Method: {order_method}")
-            # Добавляем причину, только если недавний заказ не прошел
             if order_created_at_str and not is_recent_order: reasons.append("Order is OLDER than 2 days")
 
-            # Логируем причины, если они есть
             if reasons:
                 logger.info(
-                    f"Условия фильтрации НЕ выполнены ({', '.join(reasons)}). Производится базовый экспорт.")
+                    f"Начальные условия фильтрации НЕ выполнены ({', '.join(reasons)}). Производится базовый экспорт.")
             elif order_details and not order_created_at_str:
                 logger.info(
-                    "Условия фильтрации НЕ выполнены (Проблема с датой или другое). Производится базовый экспорт.")
+                    "Начальные условия фильтрации НЕ выполнены (Проблема с датой или другое). Производится базовый экспорт.")
             else:
-                # По идее, этот else не должен срабатывать, если есть order_details
-                logger.info("Условия фильтрации НЕ выполнены. Производится базовый экспорт.")
+                logger.info("Начальные условия фильтрации НЕ выполнены. Производится базовый экспорт.")
 
+        # --- НОВЫЙ ФИЛЬТР: Проверка, был ли заказ уже проанализирован (наличие в Google Sheet) ---
+        if should_analyze:  # Проверяем только, если предыдущие фильтры пройдены
+            is_already_analyzed = is_order_link_in_analysis_sheet(order_link)
+
+            if is_already_analyzed:
+                should_analyze = False
+                logger.info(
+                    "Условие фильтрации НЕ выполнено (Order link already exists in Analysis Sheet). Производится базовый экспорт.")
+            else:
+                logger.info("Условие фильтрации (Order link check) выполнено. Производится полный анализ OpenAI.")
     else:
         logger.info("Заказ для клиента не найден. Производится базовый экспорт.")
 
@@ -366,7 +448,7 @@ def process_and_export_data(dialog_id: int, client_phone: str):
         # 5. Экспорт базовых данных (Tier 2) - Таблица Хранение чатов
         # Собираем данные для Google Forms без критериев
         google_forms_data_free = {
-            'entry.1563894862': order_link,  # ИЗМЕНЕНИЕ: Отправляем order_link вместо order_number
+            'entry.1563894862': order_link,  # Отправляем order_link
             'entry.844658380': total_summ,  # Сумма заказа
             'entry.1126205710': customer_type,  # Физ/Юр
             'entry.3334402': dialog_text  # Диалог
