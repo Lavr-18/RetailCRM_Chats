@@ -68,6 +68,7 @@ ALLOWED_PAYMENT_DOMAINS = [
     'yandex.ru',
     'forms.gle',
     'dostavka.yandex.ru',
+    'pay.ya.ru',
 ]
 
 # Статичные категории для анализа (можно оставить в коде)
