@@ -430,7 +430,8 @@ def process_and_export_data(dialog_id: int, client_phone: str):
                     'entry.830702183': openai_json_data.get('отработка_возражения', 0),
                     'entry.2001468013': openai_json_data.get('проговорить_договоренности', 0),
                     'entry.1565546251': openai_json_data.get('закрытие_на_оплату', 0),
-                    'entry.982776944': openai_json_data.get('уточнил_цель_покупки', 0)  # Короткий ключ
+                    'entry.982776944': openai_json_data.get('уточнил_цель_покупки', 0), # Короткий ключ
+                    'entry.1132365193': openai_json_data.get('последующий_уточняющий', 0)
                 }
 
                 send_to_google_forms(google_forms_data)
