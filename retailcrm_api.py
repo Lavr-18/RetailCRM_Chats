@@ -75,7 +75,7 @@ def create_task(task_data: Dict[str, Any]) -> Dict[str, Any]:
 # (логика из вашего примера)
 # ----------------------------------------------------
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time # <-- ДОБАВЛЕНО: Импорт dt_time
 import pytz
 
 # Устанавливаем часовой пояс Москвы, как в основном проекте
@@ -128,10 +128,60 @@ def create_ad_hoc_avito_task(manager_external_id: str):
     return response
 
 
+# --- НОВАЯ ФУНКЦИЯ: Создание задачи на следующий день в 10:00 МСК ---
+def create_follow_up_task(manager_id: int | str, order_id: int | None = None, customer_id: int | None = None) -> Dict[str, Any]:
+    """
+    Создает задачу в RetailCRM для менеджера на следующий день в 10:00 МСК
+    с текстом "Создайте новый заказ у клиента".
+    """
+    if not manager_id:
+        logger.error("Невозможно поставить задачу: отсутствует ID менеджера.")
+        return {"success": False, "error": "Missing manager ID"}
+
+    # 1. Определяем время задачи: Завтра в 10:00 МСК
+    now_msk = datetime.now(MOSCOW_TZ)
+    tomorrow = now_msk.date() + timedelta(days=1)
+    # Создаем datetime с привязкой к MSK
+    target_dt_msk = MOSCOW_TZ.localize(datetime.combine(tomorrow, dt_time(10, 0)))
+
+    # Форматируем для RetailCRM API (YYYY-MM-DD HH:MM)
+    task_datetime_str = target_dt_msk.strftime('%Y-%m-%d %H:%M')
+
+    task_text = "Создайте новый заказ у клиента"
+
+    # 2. Формируем тело задачи
+    task_data = {
+        'text': task_text,
+        'datetime': task_datetime_str,
+        'performerId': str(manager_id),  # ID менеджера, который должен выполнить задачу
+        'type': 'call'  # Используем 'call' для стандартного follow-up
+    }
+
+    # Добавляем связь с заказом или клиентом
+    if order_id:
+        task_data['order'] = {'id': int(order_id)}
+        logger.info(f"Связываем задачу с последним заказом ID: {order_id}")
+    elif customer_id:
+        task_data['customer'] = {'id': int(customer_id)}
+        logger.info(f"Связываем задачу с клиентом ID: {customer_id}")
+    else:
+        logger.warning("Задача не связана с заказом или клиентом (нет order_id/customer_id).")
+
+
+    logger.info(f"Попытка поставить задачу менеджеру ID {manager_id} на {task_datetime_str} МСК.")
+
+    # 3. Отправляем запрос
+    response = create_task(task_data)
+
+    return response
+
+
 # --- Тестовый модуль (опционально) ---
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger.info("retailcrm_api.py запущен.")
 
     # !!! Тестовый запуск закомментирован.
-    create_ad_hoc_avito_task('11')
+    # create_ad_hoc_avito_task('11')
+    # create_follow_up_task(manager_id=1, customer_id=500)
+    pass

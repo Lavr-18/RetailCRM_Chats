@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, date, timedelta, time as dt_time
 from glob import glob
 from typing import List, Dict, Any
-import pytz # <-- ДОБАВЛЕНО: Для работы с часовыми поясами
+import pytz  # <-- ДОБАВЛЕНО: Для работы с часовыми поясами
 
 # Добавляем корневую директорию проекта в sys.path
 # Это необходимо, чтобы импортировать config и data_exporter
@@ -17,6 +17,8 @@ sys.path.append(project_root)
 import config
 # Импортируем только необходимые функции из data_exporter
 from data_exporter import normalize_phone, process_and_export_data
+# НОВЫЙ ИМПОРТ: Для создания задачи в RetailCRM
+from retailcrm_api import create_follow_up_task  # <-- ДОБАВЛЕНО: Для создания follow-up задачи
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -26,7 +28,7 @@ DIALOG_DIR_ACTIVE = 'dialogs/active'
 DIALOG_DIR_CLOSED = 'dialogs/closed'
 DIALOG_FILE_REGEX = r'dialog_(\d+)_(\d+)\.txt'
 MAX_DIALOG_AGE_DAYS = 3  # Максимальный возраст диалога для удаления (3 дня)
-MOSCOW_TZ = pytz.timezone('Europe/Moscow') # <-- ДОБАВЛЕНО: Московский часовой пояс
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')  # <-- ДОБАВЛЕНО: Московский часовой пояс
 
 # Группа "Новый" для Метрики 2
 STATUS_GROUP_NEW = {"new", "gotovo-k-soglasovaniiu", "agree-absence"}
@@ -452,12 +454,14 @@ def process_new_dialogs(dialogs: list) -> dict:
     """
     Обновлено: считает только НОВЫЕ заказы (Метрика 2) и фильтрует
     клиентов без АКТИВНОГО (нового/измененного) заказа.
+    ДОБАВЛЕНО: Создает задачу в RetailCRM для клиентов без актуального заказа.
     """
     total_new_inquiries = len(dialogs)
     fiz_count = 0
     yur_count = 0
     orders_created_count = 0
     clients_without_order_data = []  # Хранит {'phone', 'latest_order_id'}
+    clients_to_task_data = []  # <-- ДОБАВЛЕНО: Для сбора данных для создания задач
 
     for dialog in dialogs:
         phone = dialog['client_phone']
@@ -480,7 +484,44 @@ def process_new_dialogs(dialogs: list) -> dict:
         # Добавляем клиента в список "без актуального заказа", только если он НЕ активен
         if not is_client_active:
             latest_order_id = latest_order.get('id') if latest_order else None
+
+            # Сохраняем данные для отображения в отчете (ссылки)
             clients_without_order_data.append({'phone': phone, 'latest_order_id': latest_order_id})
+
+            # Сохраняем данные для создания задачи
+            clients_to_task_data.append({
+                'phone': phone,
+                'latest_order': latest_order,
+                'latest_order_id': latest_order_id
+            })
+
+    # <-- НОВЫЙ БЛОК: Создание задач для клиентов без актуального заказа -->
+    for client_task_info in clients_to_task_data:
+        manager_id = None
+        customer_id = None
+        order_id = client_task_info['latest_order_id']
+
+        if client_task_info['latest_order']:
+            # Пытаемся получить ID менеджера (performerId)
+            manager_data = client_task_info['latest_order'].get('manager', {})
+            manager_id = manager_data.get('id')  # ID менеджера для performerId
+
+            # Пытаемся получить ID клиента
+            customer_id = client_task_info['latest_order'].get('customer', {}).get('id')
+
+        # Если manager_id найден, ставим задачу
+        if manager_id:
+            logger.info(
+                f"Ставим задачу менеджеру ID {manager_id} для клиента {client_task_info['phone']} (заказ {order_id or 'N/A'}).")
+            create_follow_up_task(
+                manager_id=manager_id,
+                order_id=order_id,
+                customer_id=customer_id
+            )
+        else:
+            logger.warning(
+                f"Не удалось найти ID менеджера для клиента {client_task_info['phone']}. Задача не поставлена.")
+    # <-- КОНЕЦ НОВОГО БЛОКА -->
 
     # Генерация ссылок (Метрика 2 - для не-активных клиентов)
     base_url_path = config.RETAILCRM_BASE_URL.replace('/api/v5', '')
